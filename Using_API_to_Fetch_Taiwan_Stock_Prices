@@ -3,60 +3,98 @@ import requests
 import json
 import os
 import time
+from datetime import datetime, timedelta
 
-def fetch_and_save_stock_data(date, stock_no):
+def fetch_stock_data(date, stock_no):
     try:
+        # 根據指定日期和股票號碼抓取股價數據
         url = f'https://www.twse.com.tw/exchangeReport/STOCK_DAY?response=json&date={date}&stockNo={stock_no}'
         response = requests.get(url)
-        response.raise_for_status()  # This will trigger an exception on HTTP error
+        response.raise_for_status()
+        return response.json()
 
-        content = response.json()
-        stock_data = content['data']
-        col_name = content['fields']
-
-        # Create DataFrame
-        df = pd.DataFrame(data=stock_data, columns=col_name)
-
-        # Translate column names from Chinese to English
-        col_name_mapping = {
-            "日期": "Date",
-            "成交股數": "Number_of_Shares_Traded",
-            "成交金額": "Total_Trade_Value",
-            "開盤價": "Opening_Price",
-            "最高價": "Highest_Price",
-            "最低價": "Lowest_Price",
-            "收盤價": "Closing_Price",
-            "漲跌價差": "Price_Difference",
-            "成交筆數": "Number_of_Transactions"
-        }
-        df.rename(columns=col_name_mapping, inplace=True)
-
-        filename = f'stock_{stock_no}_{date}.csv'
-        desktop_path = os.path.join(os.path.expanduser("~"), 'Desktop', filename)
-
-        if os.path.exists(desktop_path):
-            os.remove(desktop_path)
-            print(f"Existing file cleared: {desktop_path}")
-
-        df.to_csv(desktop_path, index=False, encoding='utf-8-sig')
-        print(f"File saved to: {desktop_path}")
-
-    except requests.exceptions.HTTPError as http_err:
+    except requests.HTTPError as http_err:
         if http_err.response.status_code in [429, 504]:
-            print("Encountered error code {0}, retrying in 60 seconds...".format(http_err.response.status_code))
+            print(f"遇到錯誤碼 {http_err.response.status_code}，將在 60 秒後重試...")
             time.sleep(60)
-            return fetch_and_save_stock_data(date, stock_no)  # Recursive call for retry
+            return fetch_stock_data(date, stock_no)  # 遞迴調用以重試
         else:
-            print(f"HTTP error occurred: {http_err}")
-    except requests.exceptions.ConnectionError as conn_err:
-        print(f"Connection error: {conn_err}")
-    except json.JSONDecodeError as json_err:
-        print(f"JSON parsing error: {json_err}")
+            print(f"HTTP 錯誤發生：{http_err}")
+            return None
+    except requests.ConnectionError as conn_err:
+        print(f"連接錯誤：{conn_err}")
+        return None
     except Exception as err:
-        print(f"Other errors occurred: {err}")
+        print(f"其他錯誤發生：{err}")
+        return None
 
-date = '20231115'
-stock_nos = ['0050', '2330']
+def fetch_and_save_stock_data(start_date, end_date, stock_no):
+    try:
+        # 驗證並解析日期
+        start_datetime = datetime.strptime(start_date, "%Y%m%d")
+        end_datetime = datetime.strptime(end_date, "%Y%m%d")
+        current_datetime = datetime.now()
 
-for stock_no in stock_nos:
-    fetch_and_save_stock_data(date, stock_no)
+        if start_datetime > end_datetime:
+            print("起始日期應小於結束日期。")
+            return
+        if start_datetime > current_datetime:
+            print("起始日期應小於當前日期。")
+            return
+
+        if end_datetime > current_datetime:
+            end_datetime = current_datetime
+            print(f"結束日期超出範圍，已調整為最新日期：{current_datetime.strftime('%Y%m%d')}")
+
+        combined_df = pd.DataFrame()
+        while start_datetime <= end_datetime:
+            date_str = start_datetime.strftime("%Y%m01")
+            content = fetch_stock_data(date_str, stock_no)
+            if content is None:
+                continue
+
+            stock_data = content['data']
+            col_name = content['fields']
+
+            df = pd.DataFrame(stock_data, columns=col_name)
+            
+            # 將中文欄位名稱轉換為英文
+            col_name_mapping = {
+                "日期": "Date",
+                "成交股數": "Number_of_Shares_Traded",
+                "成交金額": "Total_Trade_Value",
+                "開盤價": "Opening_Price",
+                "最高價": "Highest_Price",
+                "最低價": "Lowest_Price",
+                "收盤價": "Closing_Price",
+                "漲跌價差": "Price_Difference",
+                "成交筆數": "Number_of_Transactions"
+            }
+            df.rename(columns=col_name_mapping, inplace=True)
+
+            combined_df = pd.concat([combined_df, df])
+
+            start_datetime += timedelta(days=32)
+            start_datetime = start_datetime.replace(day=1)
+
+        filename = f'stock_{stock_no}_{start_date}_to_{end_date}.csv'
+        desktop_path = os.path.join(os.path.expanduser("~"), 'Desktop', filename)
+        combined_df.to_csv(desktop_path, index=False, encoding='utf-8-sig')
+        print(f"數據已儲存至：{desktop_path}")
+
+    except json.JSONDecodeError as json_err:
+        print(f"JSON 解析錯誤：{json_err}")
+    except Exception as err:
+        print(f"其他錯誤發生：{err}")
+
+
+def fetch_and_save_multiple_stocks(start_date, end_date, stock_nos):
+    for stock_no in stock_nos:
+        fetch_and_save_stock_data(start_date, end_date, stock_no)
+
+# 使用範例
+start_date = '20231001'
+end_date = '20231130'
+stock_nos = ['2330', '0050']  # 您可以在這裡添加更多股票代碼
+
+fetch_and_save_multiple_stocks(start_date, end_date, stock_nos)
