@@ -1,0 +1,62 @@
+import pandas as pd
+import requests
+import json
+import os
+import time
+
+def fetch_and_save_stock_data(date, stock_no):
+    try:
+        url = f'https://www.twse.com.tw/exchangeReport/STOCK_DAY?response=json&date={date}&stockNo={stock_no}'
+        response = requests.get(url)
+        response.raise_for_status()  # This will trigger an exception on HTTP error
+
+        content = response.json()
+        stock_data = content['data']
+        col_name = content['fields']
+
+        # Create DataFrame
+        df = pd.DataFrame(data=stock_data, columns=col_name)
+
+        # Translate column names from Chinese to English
+        col_name_mapping = {
+            "日期": "Date",
+            "成交股數": "Number_of_Shares_Traded",
+            "成交金額": "Total_Trade_Value",
+            "開盤價": "Opening_Price",
+            "最高價": "Highest_Price",
+            "最低價": "Lowest_Price",
+            "收盤價": "Closing_Price",
+            "漲跌價差": "Price_Difference",
+            "成交筆數": "Number_of_Transactions"
+        }
+        df.rename(columns=col_name_mapping, inplace=True)
+
+        filename = f'stock_{stock_no}_{date}.csv'
+        desktop_path = os.path.join(os.path.expanduser("~"), 'Desktop', filename)
+
+        if os.path.exists(desktop_path):
+            os.remove(desktop_path)
+            print(f"Existing file cleared: {desktop_path}")
+
+        df.to_csv(desktop_path, index=False, encoding='utf-8-sig')
+        print(f"File saved to: {desktop_path}")
+
+    except requests.exceptions.HTTPError as http_err:
+        if http_err.response.status_code in [429, 504]:
+            print("Encountered error code {0}, retrying in 60 seconds...".format(http_err.response.status_code))
+            time.sleep(60)
+            return fetch_and_save_stock_data(date, stock_no)  # Recursive call for retry
+        else:
+            print(f"HTTP error occurred: {http_err}")
+    except requests.exceptions.ConnectionError as conn_err:
+        print(f"Connection error: {conn_err}")
+    except json.JSONDecodeError as json_err:
+        print(f"JSON parsing error: {json_err}")
+    except Exception as err:
+        print(f"Other errors occurred: {err}")
+
+date = '20231115'
+stock_nos = ['0050', '2330']
+
+for stock_no in stock_nos:
+    fetch_and_save_stock_data(date, stock_no)
