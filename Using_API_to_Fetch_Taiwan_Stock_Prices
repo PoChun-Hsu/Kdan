@@ -1,9 +1,14 @@
+from google.cloud import bigquery
+from google.oauth2 import service_account
 import pandas as pd
 import requests
 import json
-import os
-import time
 from datetime import datetime, timedelta
+import pyarrow
+
+# 創建 BigQuery 客戶端
+credentials = service_account.Credentials.from_service_account_file('C:\\Users\\paul_p_hsu\\Desktop\\starry-center-405211-172bb674d815.json')  # 替換為您的服務賬戶文件路徑
+client = bigquery.Client(credentials=credentials, project=credentials.project_id)
 
 def fetch_stock_data(date, stock_no):
     try:
@@ -26,6 +31,18 @@ def fetch_stock_data(date, stock_no):
         return None
     except Exception as err:
         print(f"其他錯誤發生：{err}")
+        return None
+
+def convert_to_int(value):
+    try:
+        return int(value.replace(',', ''))
+    except ValueError:
+        return None
+    
+def convert_to_float(value):
+    try:
+        return float(value.replace(',', ''))
+    except ValueError:
         return None
 
 def fetch_and_save_stock_data(start_date, end_date, stock_no):
@@ -58,7 +75,7 @@ def fetch_and_save_stock_data(start_date, end_date, stock_no):
 
             df = pd.DataFrame(stock_data, columns=col_name)
             
-            # 將中文欄位名稱轉換為英文
+            # 轉換欄位名稱
             col_name_mapping = {
                 "日期": "Date",
                 "成交股數": "Number_of_Shares_Traded",
@@ -72,15 +89,25 @@ def fetch_and_save_stock_data(start_date, end_date, stock_no):
             }
             df.rename(columns=col_name_mapping, inplace=True)
 
+            # 整數轉換
+            for col in ['Number_of_Shares_Traded', 'Total_Trade_Value', 'Number_of_Transactions']:
+                df[col] = df[col].apply(convert_to_int)
+
+            # 浮點數轉換
+            for col in ['Opening_Price', 'Highest_Price', 'Lowest_Price', 'Closing_Price', 'Price_Difference']:
+                df[col] = df[col].apply(convert_to_float)
+
             combined_df = pd.concat([combined_df, df])
 
             start_datetime += timedelta(days=32)
             start_datetime = start_datetime.replace(day=1)
 
-        filename = f'stock_{stock_no}_{start_date}_to_{end_date}.csv'
-        desktop_path = os.path.join(os.path.expanduser("~"), 'Desktop', filename)
-        combined_df.to_csv(desktop_path, index=False, encoding='utf-8-sig')
-        print(f"數據已儲存至：{desktop_path}")
+        # 將數據寫入 BigQuery
+        table_id = 'starry-center-405211.Kdan.Log_Taiwan_Stock'  # 替換為您的 BigQuery 表格 ID
+        job = client.load_table_from_dataframe(combined_df, table_id)
+        job.result()  # 等待數據加載完成
+
+        print(f"數據已儲存至 BigQuery 表格：{table_id}")
 
     except json.JSONDecodeError as json_err:
         print(f"JSON 解析錯誤：{json_err}")
