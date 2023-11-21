@@ -1,98 +1,50 @@
-import pandas as pd
 import requests
 import json
 from datetime import datetime, timedelta
-from google.cloud import bigquery
-from google.oauth2 import service_account
-import pyarrow
-from google.cloud.bigquery import Table
-from google.cloud.exceptions import NotFound
+import pandas as pd
 import time
 
-
+from data_utils import convert_to_int, convert_to_float, convert_minguo_to_ad
+from bigquery_utils import manage_bigquery_tables, create_temp_table
 
 def fetch_stock_data(date, stock_no):
     try:
         url = f'https://www.twse.com.tw/exchangeReport/STOCK_DAY?response=json&date={date}&stockNo={stock_no}'
         response = requests.get(url)
         response.raise_for_status()
-        return response.json()
+        return (response.json(),200)
 
     except requests.HTTPError as http_err:
         if http_err.response.status_code in [429, 504]:
             print(f"遇到錯誤碼 {http_err.response.status_code}，將在 60 秒後重試...")
             time.sleep(60)
-            return fetch_stock_data(date, stock_no)
+            return (fetch_stock_data(date, stock_no),200)
         else:
             print(f"HTTP 錯誤發生：{http_err}")
-            return None
+            return (None, 500)
     except requests.ConnectionError as conn_err:
         print(f"連接錯誤：{conn_err}")
-        return None
+        return (None, 500)
     except Exception as err:
         print(f"其他錯誤發生：{err}")
-        return None
-
-
-def convert_to_int(value):
-    if isinstance(value, int):  # 如果值已經是整數，則直接返回
-        return value
-    try:
-        return int(value.replace(',', ''))
-    except (ValueError, AttributeError):
-        return None
-    
-
-def convert_to_float(value):
-    if isinstance(value, float):  # 如果值已經是浮點數，則直接返回
-        return value
-    try:
-        return float(value.replace(',', ''))
-    except (ValueError, AttributeError):
-        return None
-
-
-def convert_minguo_to_ad(date_str):
-    year, month, day = map(int, date_str.split('/'))
-    year += 1911  # 轉換為公元紀年
-    return f'{year}-{month:02d}-{day:02d}'
-
-
-def table_exists(client, table_id):
-    try:
-        client.get_table(table_id)  # 使用 get_table 嘗試獲取表格
-        return True
-    except NotFound:
-        return False  # 如果表格不存在，返回 False
-
-
-def create_temp_table(client, source_table_id, temp_table_id):
-    try:
-        # 檢查臨時表格是否存在，如果存在則刪除
-        if table_exists(client, temp_table_id):
-            client.delete_table(temp_table_id)
-            print(f"已存在的表格 {temp_table_id} 已刪除。")
-
-        # 獲取原表格的結構
-        source_table = client.get_table(source_table_id)
-
-        # 創建一個新的 Table 實例，並將結構設定為源表格的結構
-        temp_table = Table(temp_table_id, schema=source_table.schema)
-        
-        # 設定分簇字段
-        temp_table.clustering_fields = ["Date", "Stock_Code"]
-        # 創建表格
-        client.create_table(temp_table)
-        print(f"表格 {temp_table_id} 已創建。")
-
-    except Exception as e:
-        print(f"創建表格時出錯: {e}")
+        return (None, 500)
 
 def fetch_and_save_stock_data(client, start_date, end_date, stock_no, temp_table_id,):
     try:
         start_datetime = datetime.strptime(start_date, "%Y%m%d")
         end_datetime = datetime.strptime(end_date, "%Y%m%d")
         current_datetime = datetime.now()
+
+        # if start_datetime > end_datetime:
+        #     print("起始日期應小於結束日期。")
+        #     return
+        # if start_datetime > current_datetime:
+        #     print("起始日期應小於當前日期。")
+        #     return
+
+        # if end_datetime > current_datetime:
+        #     end_datetime = current_datetime
+        #     print(f"結束日期超出範圍，已調整為最新日期：{current_datetime.strftime('%Y%m%d')}")
 
         combined_df = pd.DataFrame()
         update_timestamp = datetime.now()
@@ -151,30 +103,13 @@ def fetch_and_save_stock_data(client, start_date, end_date, stock_no, temp_table
         job.result()
 
         #print(f"數據已儲存至 BigQuery 表格：{table_id}")
-        return(f"成功",200)
-
+        return (None, 200)
     except json.JSONDecodeError as json_err:
         print(f"JSON 解析錯誤：{json_err}")
-        return(f"失敗",400)
+        return (None, 500)
     except Exception as err:
         print(f"其他錯誤發生：{err}")
-        return(f"失敗",400)
-
-
-def manage_bigquery_tables(client, source_table_id, backup_table_id):
-    try:
-        # Step 1: 刪除 backup 表格（如果存在）
-        client.delete_table(backup_table_id, not_found_ok=True)
-
-        # Step 2: 重命名原表格為 backup
-        client.copy_table(source_table_id, backup_table_id)
-        client.delete_table(source_table_id, not_found_ok=True)
-
-        print(f"表格 {source_table_id} 已重命名為 {backup_table_id}")
-        return(f"成功",200)
-    except Exception as e:
-        print(f"BigQuery 表格操作錯誤: {e}")
-        return(f"失敗",400)
+        return (None, 500)
 
 
 def fetch_and_save_multiple_stocks(client, start_date, end_date, stock_nos, temp_table_id, source_table_id, backup_table_id):
@@ -191,28 +126,4 @@ def fetch_and_save_multiple_stocks(client, start_date, end_date, stock_nos, temp
     print(f"表格 {temp_table_id} 已重命名為 {source_table_id}")
     client.delete_table(temp_table_id, not_found_ok=True)
 
-    return(f"成功",200)   
-
-# 使用範例
-def main():
-    # 固定參數
-    start_date = '20231001'
-    end_date = datetime.now().strftime('%Y%m%d')
-    stock_nos = ['2330', '0050']
-
-    temp_table_id = 'starry-center-405211.Kdan.Log_Taiwan_Stock_Temp'
-    source_table_id = 'starry-center-405211.Kdan.Log_Taiwan_Stock'
-    backup_table_id = 'starry-center-405211.Kdan.Log_Taiwan_Stock_Backup'
-
-    # 創建 BigQuery 客戶端
-    # credentials = service_account.Credentials.from_service_account_file('C:\\Users\\paul_p_hsu\\Desktop\\starry-center-405211-172bb674d815.json')  # 替換為您的服務賬戶文件路徑
-    # client = bigquery.Client(credentials=credentials, project=credentials.project_id)
-    project_id = 'starry-center-405211'  # 將 '您的專案 ID' 替換為您的 Google Cloud 專案 ID
-    client = bigquery.Client(project=project_id)
-
-
-    try:
-        fetch_and_save_multiple_stocks(client, start_date, end_date, stock_nos, temp_table_id, source_table_id, backup_table_id)
-        return ("數據處理完成，範圍：{} 至 {}，股票代碼：{}".format(start_date, end_date, stock_nos), 200)
-    except Exception as e:
-        return ("處理過程中出現錯誤: {}".format(str(e)), 400)
+    return (None, 200)
